@@ -29,7 +29,17 @@ class Config:
         for part in parts[:-1]:
             if part not in current:
                 current[part] = {}
+            elif not isinstance(current[part], dict):
+                raise ValueError(
+                    f"Cannot set nested key '{key}': "
+                    f"part '{part}' is a scalar, not a branch"
+                )
             current = current[part]
+        if isinstance(current.get(parts[-1]), dict):
+            raise ValueError(
+                f"Cannot replace branch '{key}' with scalar value. "
+                "Use explicit assignment if intended."
+            )
         current[parts[-1]] = value
 
     def get(self, key: str, default: Any = None) -> Any:
