@@ -42,6 +42,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+
+class RequestBodySizeMiddleware(BaseHTTPMiddleware):
+    """Enforce max request body size on artifact upload routes."""
+    MAX_SIZE = 100 * 1024 * 1024  # 100 MB
+    ARTIFACT_PATHS = ["/api/v2/artifacts"]
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.method in ("POST", "PUT") and any(p in request.url.path for p in self.ARTIFACT_PATHS):
+            cl = request.headers.get("content-length")
+            if cl and int(cl) > self.MAX_SIZE:
+                return Response(status_code=413, content="{\"error\":\"Payload too large\"}")
+        return await call_next(request)
+
+
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         start = time.time()
