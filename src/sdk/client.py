@@ -14,7 +14,9 @@ class OrchestratorClient:
         self._session = None
 
     def _request(self, method: str, path: str, data: Dict = None) -> Dict:
-        url = f"{self.base_url}/api/v2{path}"
+        # Normalize base_url before joining (#1196)
+        base = self.base_url.rstrip("/")
+        url = f"{base}/api/v2{path}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
