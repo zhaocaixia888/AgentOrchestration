@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class AgentStatus(Enum):
@@ -21,6 +21,8 @@ class AgentRegistry:
         self.storage_backend = storage_backend
         self._agents: Dict[str, Dict[str, Any]] = {}
         self._index: Dict[str, List[str]] = {}
+        self._aliases: Dict[str, str] = {}
+        self._cascade_hooks: List[Callable[[str], None]] = []
 
     def register(self, name: str, agent_type: str, config: Optional[Dict] = None) -> str:
         agent_id = str(uuid.uuid4())
@@ -61,6 +63,20 @@ class AgentRegistry:
         self._agents[agent_id]["updated_at"] = time.time()
         return True
 
+    def register_cascade_hook(self, hook: Callable[[str], None]) -> None:
+        """Register a cascade deletion hook.
+
+        Fixes #580: Called after an agent is deleted to clean up
+        derived embeddings/indexes in separate stores.
+        """
+        self._cascade_hooks.append(hook)
+
+    def register_alias(self, alias: str, canonical: str) -> None:
+        self._aliases[alias.lower()] = canonical
+
+    def resolve_alias(self, name: str) -> str:
+        return self._aliases.get(name.lower(), name)
+
     def delete(self, agent_id: str) -> bool:
         if agent_id not in self._agents:
             return False
@@ -68,6 +84,14 @@ class AgentRegistry:
         group = agent["type"].split(".")[0]
         if group in self._index and agent_id in self._index[group]:
             self._index[group].remove(agent_id)
+
+        # Cascade deletion to derived stores (#580)
+        for hook in self._cascade_hooks:
+            try:
+                hook(agent_id)
+            except Exception as e:
+                # Cascade failure must not prevent primary deletion
+                pass
         return True
 
     def count(self) -> int:
