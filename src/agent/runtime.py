@@ -1,4 +1,4 @@
-"""Agent Runtime — Manages agent process lifecycle."""
+"""Agent Runtime 鈥?Manages agent process lifecycle."""
 
 import os
 import signal
@@ -70,7 +70,10 @@ class AgentRuntime:
     def get_state(self, agent_id: str) -> RuntimeState:
         proc = self._processes.get(agent_id)
         if proc and proc.poll() is not None:
-            self._states[agent_id] = RuntimeState.CRASHED
+            return_code = proc.returncode
+            self._states[agent_id] = (
+                RuntimeState.STOPPED if return_code == 0 else RuntimeState.CRASHED
+            )
         return self._states.get(agent_id, RuntimeState.STOPPED)
 
     def is_running(self, agent_id: str) -> bool:
