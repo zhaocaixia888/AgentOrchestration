@@ -11,6 +11,8 @@ class OrchestratorClient:
     def __init__(self, base_url: str = None, api_key: str = None):
         self.base_url = base_url or os.getenv("AO_API_URL", "https://api.agent-orchestrator.io")
         self.api_key = api_key or os.getenv("AO_API_KEY", "")
+        if not self.api_key:
+            raise ValueError("AO_API_KEY is required. Set it via constructor or AO_API_KEY environment variable.")
         self._session = None
 
     def _request(self, method: str, path: str, data: Dict = None) -> Dict:
