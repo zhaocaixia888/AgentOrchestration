@@ -2,12 +2,18 @@
 
 import functools
 import asyncio
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
+import inspect
 
 
 def task(name: Optional[str] = None, retries: int = 0, timeout: int = 300):
     """Decorator for marking a method as an agent task handler."""
     def decorator(func: Callable) -> Callable:
+        if not inspect.iscoroutinefunction(func):
+            # Wrap sync function as async
+            async def async_wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+            func = async_wrapper
         func.__task_config__ = {
             "name": name or func.__name__,
             "retries": retries,
