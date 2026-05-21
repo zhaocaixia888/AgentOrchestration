@@ -24,6 +24,25 @@ class TestMetricsCollector:
         assert snapshot["histograms"]["response.time"]["count"] == 2
         assert snapshot["histograms"]["response.time"]["avg"] == 1.0
 
+
+    def test_histogram_bounded_storage(self):
+        for i in range(1500):
+            self.metrics.observe("metric", float(i))
+        snap = self.metrics.snapshot()
+        h = snap["histograms"]["metric"]
+        assert h["count"] == 1500
+        assert h["min"] == 0.0
+        assert h["max"] == 1499.0
+        assert len(h["samples"]) <= 1000
+
+    def test_snapshot_isolation(self):
+        self.metrics.gauge("test", 42.0)
+        self.metrics.observe("h", 1.0)
+        snap = self.metrics.snapshot()
+        snap["gauges"]["test"] = 99.0
+        snap2 = self.metrics.snapshot()
+        assert snap2["gauges"]["test"] == 42.0
+
     def test_timer(self):
         self.metrics.start_timer("operation")
         import time
