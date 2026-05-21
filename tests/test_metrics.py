@@ -24,6 +24,13 @@ class TestMetricsCollector:
         assert snapshot["histograms"]["response.time"]["count"] == 2
         assert snapshot["histograms"]["response.time"]["avg"] == 1.0
 
+    def test_gauge_rejects_non_numeric(self):
+        import pytest
+        with pytest.raises(TypeError, match="Gauge value must be numeric"):
+            self.metrics.gauge("invalid", "not_a_number")
+        with pytest.raises(TypeError, match="Gauge value must be numeric"):
+            self.metrics.gauge("invalid", None)
+
     def test_timer(self):
         self.metrics.start_timer("operation")
         import time
