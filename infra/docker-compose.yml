@@ -1,0 +1,117 @@
+# Docker Compose 鈥?Agent Orchestration Platform
+#
+# Sidecar containers use read-only root filesystems with explicit
+# writable tmpfs mounts for security and auditability.
+#
+# /bounty $3000
+
+version: "3.9"
+
+x-sidecar-base: &sidecar-base
+  image: ${AO_IMAGE:-agent-orchestrator:latest}
+  restart: unless-stopped
+  networks:
+    - ao-net
+  # Read-only root filesystem 鈥?sidecars should not write to disk
+  read_only: true
+  # Temp directories needed at runtime
+  tmpfs:
+    - /tmp:size=64M
+    - /var/run:size=16M
+
+services:
+  # 鈹€鈹€鈹€ Main API Service 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  api:
+    image: ${AO_IMAGE:-agent-orchestrator:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "${AO_PORT:-8000}:8000"
+    environment:
+      - AO_REDIS_URL=redis://redis:6379/0
+      - AO_DB_URL=postgresql://ao:${DB_PASSWORD:-changeme}@postgres:5432/ao
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - ao-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # 鈹€鈹€鈹€ Redis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ao-net
+    tmpfs:
+      - /data:size=256M
+    read_only: true
+
+  # 鈹€鈹€鈹€ PostgreSQL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ao
+      POSTGRES_USER: ao
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ao -d ao"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ao-net
+
+  # 鈹€鈹€鈹€ Sidecar: Metrics Collector 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  metrics:
+    <<: *sidecar-base
+    command: ["python", "-m", "src.common.metrics"]
+    environment:
+      - AO_METRICS_PORT=9090
+      - AO_API_HOST=api
+    tmpfs:
+      - /tmp:size=64M
+      - /var/run:size=16M
+
+  # 鈹€鈹€鈹€ Sidecar: Log Collector 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  logs:
+    <<: *sidecar-base
+    command: ["python", "-m", "src.common.logging"]
+    environment:
+      - AO_LOG_LEVEL=${LOG_LEVEL:-info}
+      - AO_LOGS_ENDPOINT=${LOGS_ENDPOINT:-}
+    tmpfs:
+      - /tmp:size=64M
+      - /var/run:size=16M
+
+  # 鈹€鈹€鈹€ Sidecar: Scheduler Worker 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  scheduler:
+    <<: *sidecar-base
+    command: ["python", "-m", "src.orchestrator.scheduler"]
+    environment:
+      - AO_REDIS_URL=redis://redis:6379/0
+      - AO_API_HOST=api
+    tmpfs:
+      - /tmp:size=64M
+      - /var/run:size=16M
+
+volumes:
+  pg-data:
+
+networks:
+  ao-net:
+    driver: bridge
