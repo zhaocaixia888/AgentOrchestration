@@ -1,28 +1,91 @@
-"""API route definitions."""
+"""API route definitions — with RBAC, template cloning, webhook endpoints, and auth."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import List, Dict, Optional
 
 from src.agent import AgentRegistry, AgentStatus
+from src.common.auth_service import auth_service
+from src.common.rbac import workspace_role_manager, check_action_permission, Role
+from src.common.webhook_logger import webhook_delivery_logger, redact_webhook_payload
+from src.common.storage import manifest_checker, legal_hold_manager, retention_policy
 
 router = APIRouter()
 registry = AgentRegistry()
 
 
+# ---- Helper to extract user info from request -----------------------------
+
+def _get_user_role(request: Request) -> str:
+    """Extract the user's primary role from the request."""
+    roles = getattr(request.state, "roles", ["viewer"])
+    return roles[0] if isinstance(roles, list) else roles
+
+
+def _get_user_id(request: Request) -> str:
+    return getattr(request.state, "user_id", "anonymous")
+
+
+def _check_rbac(request: Request, action: str) -> str:
+    """Check RBAC and return user_role. Raises HTTPException on failure."""
+    user_role = _get_user_role(request)
+    if not check_action_permission(user_role, action):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient permissions for action: {action}"
+        )
+    return user_role
+
+
+# ---- Auth endpoints -------------------------------------------------------
+
+@router.post("/auth/token")
+async def create_token(user_id: str, roles: Optional[List[str]] = None):
+    token, expiry = auth_service.issue_token(user_id, roles or ["viewer"])
+    return {"token": token, "expiry": expiry, "token_type": "Bearer"}
+
+
+@router.post("/auth/revoke")
+async def revoke_token(token_hash: str):
+    if auth_service.revoke_token(token_hash):
+        return {"status": "revoked"}
+    raise HTTPException(status_code=404, detail="Token not found")
+
+
+@router.get("/auth/validate")
+async def validate_token(request: Request):
+    """Revalidate the current token (for long-poll health checks)."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = auth_header[7:]
+    info = auth_service.validate_token(token)
+    if info is None:
+        raise HTTPException(status_code=401, detail="Token revoked or invalid")
+    return {"valid": True, "user_id": info["user_id"], "roles": info["roles"]}
+
+
+# ---- Agent endpoints ------------------------------------------------------
+
 @router.get("/agents")
-async def list_agents(status: Optional[str] = None, group: Optional[str] = None):
+async def list_agents(request: Request, status: Optional[str] = None, group: Optional[str] = None, limit: int = 100, offset: int = 0):
+    _check_rbac(request, "agent:list")
     status_filter = AgentStatus(status) if status else None
-    return {"agents": registry.list(status=status_filter, group=group)}
+    agents_list = registry.list(status=status_filter, group=group)
+    page_size = min(limit, 1000)
+    return {"agents": agents_list[offset:offset+page_size], "total": len(agents_list), "limit": page_size, "offset": offset}
 
 
 @router.post("/agents")
-async def register_agent(name: str, agent_type: str, config: Optional[Dict] = None):
+async def register_agent(request: Request, name: str, agent_type: str,
+                          config: Optional[Dict] = None):
+    _check_rbac(request, "agent:create")
     agent_id = registry.register(name, agent_type, config)
     return {"agent_id": agent_id, "status": "registered"}
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str):
+async def get_agent(request: Request, agent_id: str):
+    _check_rbac(request, "agent:get")
     agent = registry.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -30,21 +93,24 @@ async def get_agent(agent_id: str):
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str):
+async def delete_agent(request: Request, agent_id: str):
+    _check_rbac(request, "agent:delete")
     if not registry.delete(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "deleted"}
 
 
 @router.post("/agents/{agent_id}/start")
-async def start_agent(agent_id: str):
+async def start_agent(request: Request, agent_id: str):
+    _check_rbac(request, "agent:start")
     if not registry.update_status(agent_id, AgentStatus.RUNNING):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "started"}
 
 
 @router.post("/agents/{agent_id}/stop")
-async def stop_agent(agent_id: str):
+async def stop_agent(request: Request, agent_id: str):
+    _check_rbac(request, "agent:stop")
     if not registry.update_status(agent_id, AgentStatus.PAUSED):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "stopped"}
@@ -54,140 +120,286 @@ async def stop_agent(agent_id: str):
 async def agent_count():
     return {"count": registry.count()}
 
-# 2019-03-18T11:10:18 update
 
-# 2019-04-22T13:58:05 update
-
-# 2019-05-28T08:52:40 update
-
-# 2019-06-13T19:27:11 update
-
-# 2019-06-25T18:52:04 update
-
-# 2019-06-26T17:23:40 update
-
-# 2019-07-24T12:38:12 update
-
-# 2019-08-06T17:13:22 update
-
-# 2019-09-26T19:27:40 update
-
-# 2019-11-08T15:48:07 update
-
-# 2019-12-05T16:07:01 update
-
-# 2020-01-17T17:50:06 update
-
-# 2020-04-24T17:12:53 update
-
-# 2020-07-21T19:32:14 update
-
-# 2020-07-21T20:23:54 update
-
-# 2020-08-14T20:37:18 update
-
-# 2020-11-05T16:47:32 update
-
-# 2021-03-11T12:52:51 update
-
-# 2021-03-15T12:40:28 update
-
-# 2021-03-19T19:24:45 update
-
-# 2021-05-07T14:43:25 update
-
-# 2021-05-12T12:11:05 update
-
-# 2021-05-26T19:45:39 update
-
-# 2021-06-29T19:14:28 update
-
-# 2021-07-09T17:57:49 update
-
-# 2021-07-19T08:20:34 update
-
-# 2021-07-23T15:35:00 update
-
-# 2021-07-26T09:55:35 update
-
-# 2021-11-01T20:50:23 update
-
-# 2022-02-04T09:23:08 update
-
-# 2022-02-14T15:58:17 update
-
-# 2022-02-28T09:52:05 update
-
-# 2022-05-19T16:28:06 update
-
-# 2022-05-30T15:01:44 update
-
-# 2022-07-31T11:24:57 update
-
-# 2022-08-09T15:47:57 update
-
-# 2022-08-19T12:51:59 update
-
-# 2022-11-02T08:06:45 update
-
-# 2022-11-21T14:12:56 update
-
-# 2023-01-13T12:25:51 update
-
-# 2023-03-31T14:11:34 update
-
-# 2023-04-03T20:57:22 update
-
-# 2023-04-28T19:01:38 update
-
-# 2023-07-18T16:47:22 update
-
-# 2023-09-28T18:50:58 update
-
-# 2023-10-02T13:22:15 update
-
-# 2023-10-23T10:46:19 update
-
-# 2023-11-02T16:52:55 update
-
-# 2023-12-08T17:38:20 update
-
-# 2023-12-11T10:59:19 update
-
-# 2024-01-15T16:27:41 update
-
-# 2024-02-09T11:56:21 update
-
-# 2024-02-15T16:47:43 update
-
-# 2024-03-26T08:08:33 update
-
-# 2024-07-11T15:59:46 update
-
-# 2024-09-04T17:13:05 update
-
-# 2024-09-20T11:28:38 update
-
-# 2024-12-02T16:42:53 update
-
-# 2025-01-15T12:12:38 update
-
-# 2025-02-05T09:08:36 update
-
-# 2025-05-16T19:40:31 update
-
-# 2025-06-13T13:20:50 update
-
-# 2025-08-13T12:22:26 update
-
-# 2025-09-01T12:30:44 update
-
-# 2025-11-06T12:23:44 update
-
-# 2025-12-26T08:40:45 update
-
-# 2026-04-08T19:23:48 update
-
-# 2026-04-09T20:30:37 update
-
-# 2026-05-13T11:36:25 update
+# ---- Template endpoints (Issue #552) --------------------------------------
+
+# In-memory template store
+_templates: Dict[str, Dict] = {}
+_template_id_counter = 0
+
+
+def _next_template_id() -> str:
+    global _template_id_counter
+    _template_id_counter += 1
+    return f"tmpl-{_template_id_counter}"
+
+
+@router.get("/templates")
+async def list_templates(request: Request, group: Optional[str] = None):
+    _check_rbac(request, "template:list")
+    if group:
+        return {"templates": [t for t in _templates.values() if t.get("group") == group]}
+    return {"templates": list(_templates.values())}
+
+
+@router.post("/templates")
+async def create_template(request: Request, name: str, group: str = "default",
+                           config: Optional[Dict] = None,
+                           workspace_id: str = "default"):
+    user_role = _check_rbac(request, "template:create")
+    # Workspace-level RBAC
+    user_id = _get_user_id(request)
+    if not workspace_role_manager.can_perform(workspace_id, user_id, "template:create"):
+        raise HTTPException(status_code=403, detail="Insufficient workspace permissions")
+
+    tmpl_id = _next_template_id()
+    _templates[tmpl_id] = {
+        "id": tmpl_id,
+        "name": name,
+        "group": group,
+        "config": config or {},
+        "workspace_id": workspace_id,
+        "created_by": user_id,
+        "version": "1.0.0",
+    }
+    return {"template_id": tmpl_id, "status": "created"}
+
+
+@router.post("/templates/clone")
+async def clone_template(request: Request, template_id: str, new_name: str,
+                          target_workspace_id: str = "default"):
+    """Clone a template from one workspace to another.
+
+    Fixes #552: Requires at least 'editor' role in the SOURCE workspace.
+    """
+    user_role = _check_rbac(request, "template:clone")
+    user_id = _get_user_id(request)
+
+    if template_id not in _templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    source = _templates[template_id]
+    source_workspace = source.get("workspace_id", "default")
+
+    # Enforce role check on source workspace (#552)
+    if not workspace_role_manager.can_clone_template(source_workspace, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Role '{user_role}' insufficient to clone template from "
+                   f"workspace '{source_workspace}'. Requires at least 'editor'."
+        )
+
+    cloned_id = _next_template_id()
+    _templates[cloned_id] = {
+        **source,
+        "id": cloned_id,
+        "name": new_name,
+        "workspace_id": target_workspace_id,
+        "cloned_from": template_id,
+        "cloned_by": user_id,
+        "version": "1.0.0",
+    }
+    return {"template_id": cloned_id, "status": "cloned", "source": template_id}
+
+
+@router.get("/templates/{template_id}")
+async def get_template(request: Request, template_id: str):
+    _check_rbac(request, "template:get")
+    tmpl = _templates.get(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tmpl
+
+
+@router.delete("/templates/{template_id}")
+async def delete_template(request: Request, template_id: str):
+    _check_rbac(request, "template:delete")
+    if template_id not in _templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+    del _templates[template_id]
+    return {"status": "deleted"}
+
+
+# ---- Webhook endpoints (Issue #590) ---------------------------------------
+
+_webhooks: Dict[str, Dict] = {}
+_webhook_counter = 0
+_webhook_delivery_log: List[Dict] = []
+
+
+def _next_webhook_id() -> str:
+    global _webhook_counter
+    _webhook_counter += 1
+    return f"wh-{_webhook_counter}"
+
+
+@router.post("/webhooks")
+async def register_webhook(request: Request, url: str, secret: Optional[str] = None,
+                            events: List[str] = ["*"]):
+    _check_rbac(request, "webhook:create")
+    wh_id = _next_webhook_id()
+    # Store secret but log redacted
+    _webhooks[wh_id] = {
+        "id": wh_id,
+        "url": url,
+        "secret": secret,  # stored encrypted in production
+        "events": events,
+        "created_by": _get_user_id(request),
+        "active": True,
+    }
+    return {"webhook_id": wh_id, "status": "created"}
+
+
+@router.post("/webhooks/{webhook_id}/test")
+async def test_webhook_delivery(request: Request, webhook_id: str):
+    """Simulate a webhook delivery (for testing redaction in logs)."""
+    _check_rbac(request, "webhook:update")
+    wh = _webhooks.get(webhook_id)
+    if not wh:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    # Simulate a delivery
+    delivery_request = {
+        "headers": {"Authorization": "Bearer sk-secret-key-12345", "Content-Type": "application/json"},
+        "body": {"event": "test", "data": {"api_key": "sk-abc123def456"}},
+    }
+    delivery_response = {
+        "status_code": 200,
+        "headers": {"x-request-id": "req-98765"},
+        "body": {"ok": True},
+    }
+
+    # Log with redaction
+    webhook_delivery_logger.log_delivery_success(
+        webhook_id=webhook_id,
+        endpoint=wh["url"],
+        request=delivery_request,
+        response=delivery_response,
+    )
+
+    record = {
+        "webhook_id": webhook_id,
+        "endpoint": wh["url"],
+        "status": "tested",
+        "request": redact_webhook_payload(delivery_request),
+    }
+    _webhook_delivery_log.append(record)
+    return record
+
+
+@router.get("/webhooks/{webhook_id}/logs")
+async def get_webhook_logs(request: Request, webhook_id: str):
+    _check_rbac(request, "webhook:list")
+    return {
+        "webhook_id": webhook_id,
+        "logs": [
+            r for r in _webhook_delivery_log
+            if r.get("webhook_id") == webhook_id
+        ],
+    }
+
+
+@router.get("/webhooks")
+async def list_webhooks(request: Request):
+    _check_rbac(request, "webhook:list")
+    return {"webhooks": [
+        {k: v for k, v in wh.items() if k != "secret"}
+        for wh in _webhooks.values()
+    ]}
+
+
+# ---- Storage / Manifest endpoints (Issue #841) ----------------------------
+
+@router.post("/storage/manifest/register")
+async def register_blob(request: Request, blob_id: str, blob_path: str):
+    """Register a blob for integrity tracking."""
+    _check_rbac(request, "agent:create")
+    entry = manifest_checker.register_blob(blob_id, blob_path)
+    return {
+        "blob_id": blob_id,
+        "digest": entry.expected_digest[:16] + "...",
+        "size": entry.size_bytes,
+    }
+
+
+@router.get("/storage/manifest/verify/{blob_id}")
+async def verify_blob(request: Request, blob_id: str):
+    """Verify blob integrity. Returns alert if mismatch detected."""
+    _check_rbac(request, "agent:list")
+    status = manifest_checker.verify_blob(blob_id)
+    result = {"blob_id": blob_id, "status": status.value}
+    if status.value == "mismatch":
+        alerts = manifest_checker.get_unacknowledged_alerts()
+        result["alerts"] = [
+            {"blob_id": a.blob_id, "expected": a.expected_digest[:16] + "...",
+             "actual": a.actual_digest[:16] + "...", "timestamp": a.timestamp}
+            for a in alerts if a.blob_id == blob_id
+        ]
+    return result
+
+
+@router.get("/storage/alerts")
+async def list_integrity_alerts(request: Request):
+    """List all unacknowledged integrity alerts."""
+    _check_rbac(request, "agent:list")
+    alerts = manifest_checker.get_unacknowledged_alerts()
+    return {
+        "alerts": [
+            {"blob_id": a.blob_id, "status": a.status.value, "timestamp": a.timestamp}
+            for a in alerts
+        ],
+        "count": len(alerts),
+    }
+
+
+# ---- Legal Hold endpoints (Issue #828) ------------------------------------
+
+@router.post("/storage/legal-hold")
+async def place_legal_hold(request: Request, artifact_id: str, reason: str):
+    _check_rbac(request, "rbac:modify")
+    hold = legal_hold_manager.place_hold(
+        artifact_id=artifact_id,
+        reason=reason,
+        placed_by=_get_user_id(request),
+    )
+    return {
+        "artifact_id": artifact_id,
+        "status": "hold_placed",
+        "placed_at": hold.placed_at,
+    }
+
+
+@router.delete("/storage/legal-hold/{artifact_id}")
+async def remove_legal_hold(request: Request, artifact_id: str):
+    _check_rbac(request, "rbac:modify")
+    if legal_hold_manager.remove_hold(artifact_id):
+        return {"status": "hold_removed"}
+    raise HTTPException(status_code=404, detail="No hold found")
+
+
+@router.get("/storage/legal-hold")
+async def list_legal_holds(request: Request):
+    _check_rbac(request, "rbac:view")
+    return {"holds": [
+        {"artifact_id": h.artifact_id, "reason": h.reason,
+         "placed_by": h.placed_by, "placed_at": h.placed_at}
+        for h in legal_hold_manager.list_holds()
+    ]}
+
+
+# ---- RBAC management endpoints -------------------------------------------
+
+@router.post("/rbac/role")
+async def set_workspace_role(request: Request, workspace_id: str,
+                              user_id: str, role: str):
+    _check_rbac(request, "rbac:modify")
+    workspace_role_manager.set_role(workspace_id, user_id, role)
+    return {"workspace_id": workspace_id, "user_id": user_id, "role": role, "status": "set"}
+
+
+@router.get("/rbac/role/{workspace_id}/{user_id}")
+async def get_workspace_role(workspace_id: str, user_id: str):
+    role = workspace_role_manager.get_role(workspace_id, user_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="User not found in workspace")
+    return {"workspace_id": workspace_id, "user_id": user_id, "role": role}
